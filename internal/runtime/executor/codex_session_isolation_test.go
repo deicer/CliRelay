@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
@@ -64,6 +66,60 @@ func TestCodexCacheHelperScopesOpenAIResponsePromptCacheKeyByAccount(t *testing.
 	}
 }
 
+func TestCodexCacheHelperAddsStablePromptCacheKeyForOpenAIChatCompletions(t *testing.T) {
+	authA := codexSessionIsolationAuth("auth-a", "acct-a", "a@example.com")
+	authB := codexSessionIsolationAuth("auth-b", "acct-b", "b@example.com")
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}`),
+	}
+
+	httpReqA1 := codexCacheHelperRequest(t, authA, sdktranslator.FromString("openai"), req)
+	httpReqA2 := codexCacheHelperRequest(t, authA, sdktranslator.FromString("openai"), req)
+	httpReqB := codexCacheHelperRequest(t, authB, sdktranslator.FromString("openai"), req)
+	sessionA1 := gjson.GetBytes(readRequestBody(t, httpReqA1), "prompt_cache_key").String()
+	sessionA2 := gjson.GetBytes(readRequestBody(t, httpReqA2), "prompt_cache_key").String()
+	sessionB := gjson.GetBytes(readRequestBody(t, httpReqB), "prompt_cache_key").String()
+
+	if sessionA1 == "" {
+		t.Fatal("prompt_cache_key missing for openai chat completions")
+	}
+	if sessionA1 != sessionA2 {
+		t.Fatalf("same account prompt_cache_key differs: %q vs %q", sessionA1, sessionA2)
+	}
+	if sessionA1 == sessionB {
+		t.Fatalf("different accounts produced same prompt_cache_key: %q", sessionA1)
+	}
+	if httpReqA1.Header.Get("Conversation_id") != sessionA1 || httpReqA1.Header.Get("Session_id") != sessionA1 {
+		t.Fatalf("headers A = %#v, want scoped session %q", httpReqA1.Header, sessionA1)
+	}
+}
+
+func TestCodexCacheHelperUsesInboundSessionForOpenAIChatCompletions(t *testing.T) {
+	auth := codexSessionIsolationAuth("auth-a", "acct-a", "a@example.com")
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5.5",
+		Payload: []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"hello"}]}`),
+	}
+
+	httpReqA1 := codexCacheHelperRequestWithHeaders(t, auth, sdktranslator.FromString("openai"), req, http.Header{"Session-Id": []string{"chat-a"}})
+	httpReqA2 := codexCacheHelperRequestWithHeaders(t, auth, sdktranslator.FromString("openai"), req, http.Header{"Session-Id": []string{"chat-a"}})
+	httpReqB := codexCacheHelperRequestWithHeaders(t, auth, sdktranslator.FromString("openai"), req, http.Header{"Session-Id": []string{"chat-b"}})
+	sessionA1 := gjson.GetBytes(readRequestBody(t, httpReqA1), "prompt_cache_key").String()
+	sessionA2 := gjson.GetBytes(readRequestBody(t, httpReqA2), "prompt_cache_key").String()
+	sessionB := gjson.GetBytes(readRequestBody(t, httpReqB), "prompt_cache_key").String()
+
+	if sessionA1 == "" || sessionB == "" {
+		t.Fatalf("prompt_cache_key missing: %q / %q", sessionA1, sessionB)
+	}
+	if sessionA1 != sessionA2 {
+		t.Fatalf("same inbound session produced different prompt_cache_key: %q vs %q", sessionA1, sessionA2)
+	}
+	if sessionA1 == sessionB {
+		t.Fatalf("different inbound sessions produced same prompt_cache_key: %q", sessionA1)
+	}
+}
+
 func TestApplyCodexPromptCacheHeadersScopesOpenAIResponsePromptCacheKeyByAccount(t *testing.T) {
 	authA := codexSessionIsolationAuth("auth-a", "acct-a", "a@example.com")
 	authB := codexSessionIsolationAuth("auth-b", "acct-b", "b@example.com")
@@ -117,6 +173,23 @@ func codexCacheHelperRequest(t *testing.T, auth *cliproxyauth.Auth, from sdktran
 		t.Fatalf("cacheHelper() error = %v", err)
 	}
 	return got
+}
+
+func codexCacheHelperRequestWithHeaders(t *testing.T, auth *cliproxyauth.Auth, from sdktranslator.Format, req cliproxyexecutor.Request, headers http.Header) *http.Request {
+	t.Helper()
+	ginCtx := &gin.Context{Request: httptestRequestWithHeaders(headers)}
+	ctx := context.WithValue(context.Background(), util.ContextKeyGin, ginCtx)
+	got, err := (&CodexExecutor{}).cacheHelper(ctx, auth, from, "https://chatgpt.com/backend-api/codex/responses", req, req.Payload)
+	if err != nil {
+		t.Fatalf("cacheHelper() error = %v", err)
+	}
+	return got
+}
+
+func httptestRequestWithHeaders(headers http.Header) *http.Request {
+	req, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	req.Header = headers
+	return req
 }
 
 func readRequestBody(t *testing.T, req *http.Request) []byte {

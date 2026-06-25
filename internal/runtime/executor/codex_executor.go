@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	codexauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/codex"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -492,27 +493,7 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 }
 
 func (e *CodexExecutor) cacheHelper(ctx context.Context, auth *cliproxyauth.Auth, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte) (*http.Request, error) {
-	var cache codexCache
-	if from == "claude" {
-		userIDResult := gjson.GetBytes(req.Payload, "metadata.user_id")
-		if userIDResult.Exists() {
-			key := codexPromptCacheMapKey(auth, req.Model, userIDResult.String())
-			var ok bool
-			if cache, ok = getCodexCache(key); !ok {
-				cache = codexCache{
-					ID:     uuid.New().String(),
-					Expire: time.Now().Add(1 * time.Hour),
-				}
-				setCodexCache(key, cache)
-			}
-		}
-	} else if from == "openai-response" {
-		promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key")
-		if promptCacheKey.Exists() {
-			cache.ID = codexAccountScopedExplicitSessionID(auth, promptCacheKey.String())
-		}
-	}
-
+	cache := codexPromptCacheForRequest(ctx, auth, from, req)
 	if cache.ID != "" {
 		rawJSON, _ = sjson.SetBytes(rawJSON, "prompt_cache_key", cache.ID)
 	}
@@ -525,4 +506,68 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, auth *cliproxyauth.Auth
 		httpReq.Header.Set("Session_id", cache.ID)
 	}
 	return httpReq, nil
+}
+
+func codexPromptCacheForRequest(ctx context.Context, auth *cliproxyauth.Auth, from sdktranslator.Format, req cliproxyexecutor.Request) codexCache {
+	if from == "claude" {
+		userIDResult := gjson.GetBytes(req.Payload, "metadata.user_id")
+		if !userIDResult.Exists() {
+			return codexCache{}
+		}
+		key := codexPromptCacheMapKey(auth, req.Model, userIDResult.String())
+		if cache, ok := getCodexCache(key); ok {
+			return cache
+		}
+		cache := codexCache{
+			ID:     uuid.New().String(),
+			Expire: time.Now().Add(1 * time.Hour),
+		}
+		setCodexCache(key, cache)
+		return cache
+	}
+
+	if from == "openai-response" {
+		if promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key"); promptCacheKey.Exists() {
+			return codexCache{ID: codexAccountScopedExplicitSessionID(auth, promptCacheKey.String())}
+		}
+		return codexCache{}
+	}
+
+	if from == "openai" {
+		if promptCacheKey := gjson.GetBytes(req.Payload, "prompt_cache_key"); promptCacheKey.Exists() {
+			return codexCache{ID: codexAccountScopedExplicitSessionID(auth, promptCacheKey.String())}
+		}
+		if sessionID := inboundSessionKey(ctx); sessionID != "" {
+			return codexCache{ID: codexAccountScopedExplicitSessionID(auth, sessionID)}
+		}
+		return codexCache{ID: codexAccountScopedExplicitSessionID(auth, "openai-chat-"+req.Model)}
+	}
+
+	return codexCache{}
+}
+
+func inboundSessionKey(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	ginCtx, ok := ctx.Value(util.ContextKeyGin).(*gin.Context)
+	if !ok || ginCtx == nil || ginCtx.Request == nil {
+		return ""
+	}
+	for _, header := range []string{
+		"Session-Id",
+		"session_id",
+		"X-Session-Id",
+		"X-Codex-Session-Id",
+		"X-Claude-Code-Session-Id",
+		"Conversation-Id",
+		"conversation_id",
+		"X-Conversation-Id",
+		"OpenAI-Conversation-Id",
+	} {
+		if value := strings.TrimSpace(ginCtx.Request.Header.Get(header)); value != "" {
+			return strings.ToLower(header) + ":" + value
+		}
+	}
+	return ""
 }
