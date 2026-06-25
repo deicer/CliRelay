@@ -144,6 +144,8 @@ func RegisterExecutorForAuth(coreManager *coreauth.Manager, cfg *config.Config, 
 		coreManager.RegisterExecutor(executor.NewIFlowExecutor(cfg))
 	case "kimi":
 		coreManager.RegisterExecutor(executor.NewKimiExecutor(cfg))
+	case "commandcode":
+		coreManager.RegisterExecutor(executor.NewCommandCodeExecutor(cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(auth.Provider))
 		if providerKey == "" {

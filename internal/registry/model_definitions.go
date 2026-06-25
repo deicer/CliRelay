@@ -48,6 +48,8 @@ func GetStaticModelDefinitionsByChannel(channel string) []*ModelInfo {
 		return GetKimiModels()
 	case "opencode-go":
 		return GetOpenCodeGoModels()
+	case "commandcode":
+		return GetCommandCodeModels()
 	case "antigravity":
 		cfg := GetAntigravityModelConfig()
 		if len(cfg) == 0 {
@@ -95,6 +97,7 @@ func LookupStaticModelInfo(modelID string) *ModelInfo {
 		GetIFlowModels(),
 		GetKimiModels(),
 		GetOpenCodeGoModels(),
+		GetCommandCodeModels(),
 	}
 	for _, models := range allModels {
 		for _, m := range models {

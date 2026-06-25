@@ -1155,3 +1155,18 @@ func GetOpenCodeGoModels() []*ModelInfo {
 	}
 	return models
 }
+
+// GetCommandCodeModels returns the CommandCode model definitions.
+func GetCommandCodeModels() []*ModelInfo {
+	return []*ModelInfo{
+		{
+			ID:          "deepseek/deepseek-v4-pro",
+			Object:      "model",
+			Created:     1781751220,
+			OwnedBy:     "commandcode",
+			Type:        "commandcode",
+			DisplayName: "DeepSeek V4 Pro (CommandCode)",
+			Description: "DeepSeek V4 Pro model proxied through CommandCode",
+		},
+	}
+}

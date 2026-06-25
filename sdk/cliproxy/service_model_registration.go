@@ -158,6 +158,9 @@ func (s *Service) registerModelsForAuth(ctx context.Context, a *coreauth.Auth) {
 			excluded = entry.ExcludedModels
 		}
 		models = applyExcludedModels(models, excluded)
+	case "commandcode":
+		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("commandcode")
+		models = applyExcludedModels(models, excluded)
 	case "codex":
 		models = sdkmodelcatalog.StaticModelDefinitionsByChannel("codex")
 		if entry := s.resolveConfigCodexKey(a); entry != nil {

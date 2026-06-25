@@ -288,6 +288,9 @@ func metadataString(metadata map[string]any, keys ...string) string {
 // credential JSON shapes that are produced by supported OAuth flows.
 func InferAuthProvider(metadata map[string]any) string {
 	provider := metadataString(metadata, "type")
+	if provider == "" {
+		provider = metadataString(metadata, "provider")
+	}
 	if provider == "" && isCodexOAuthMetadata(metadata) {
 		provider = "codex"
 		if metadata != nil {

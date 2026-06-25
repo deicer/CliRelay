@@ -24,4 +24,7 @@ const (
 
 	// Antigravity represents the Antigravity response format identifier.
 	Antigravity = "antigravity"
+
+	// CommandCode represents the Command Code CLI provider/format identifier.
+	CommandCode = "commandcode"
 )
