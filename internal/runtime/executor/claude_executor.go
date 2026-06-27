@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -183,6 +184,11 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		recorder.RecordResponseError(err)
 		return resp, err
 	}
+	if bytes.Contains(data, []byte("Please use Claude Code CLI")) {
+		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), "upstream requires Claude Code CLI")
+		err = statusErr{code: http.StatusForbidden, msg: "upstream requires Claude Code CLI"}
+		return resp, err
+	}
 	recorder.AppendResponseChunk(data)
 	if stream {
 		lines := bytes.Split(data, []byte("\n"))
@@ -308,6 +314,22 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 		return nil, err
 	}
+	// Peek at first chunk to detect non-streaming stub responses from upstream
+	peek := make([]byte, 1024)
+	n, peekErr := decodedBody.Read(peek)
+	if n > 0 && bytes.Contains(peek[:n], []byte("Please use Claude Code CLI")) {
+		_ = decodedBody.Close()
+		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), "upstream requires Claude Code CLI")
+		err = statusErr{code: http.StatusForbidden, msg: "upstream requires Claude Code CLI"}
+		return nil, err
+	}
+	// Wrap the body back together: we already consumed the peek bytes
+	var bodyReader io.Reader = decodedBody
+	if n > 0 && peekErr == nil {
+		bodyReader = io.MultiReader(bytes.NewReader(peek[:n]), decodedBody)
+	} else if peekErr != nil && n > 0 {
+		bodyReader = bytes.NewReader(peek[:n])
+	}
 	out := make(chan cliproxyexecutor.StreamChunk)
 	reporter.setInputContent(string(req.Payload))
 	go func() {
@@ -320,7 +342,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 
 		// If from == to (Claude → Claude), directly forward the SSE stream without translation
 		if execCtx.SourceFormat == to {
-			scanner := bufio.NewScanner(decodedBody)
+			scanner := bufio.NewScanner(bodyReader)
 			scanner.Buffer(nil, 52_428_800) // 50MB
 			for scanner.Scan() {
 				line := scanner.Bytes()
@@ -347,7 +369,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 		}
 
 		// For other formats, use translation
-		scanner := bufio.NewScanner(decodedBody)
+		scanner := bufio.NewScanner(bodyReader)
 		scanner.Buffer(nil, 52_428_800) // 50MB
 		var param any
 		for scanner.Scan() {
