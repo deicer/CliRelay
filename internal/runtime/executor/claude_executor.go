@@ -185,6 +185,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		return resp, err
 	}
 	if bytes.Contains(data, []byte("Please use Claude Code CLI")) {
+		log.Errorf("[claude-executor] DETECTED FAKE RESPONSE from upstream, returning 403 to trigger failover")
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), "upstream requires Claude Code CLI")
 		err = statusErr{code: http.StatusForbidden, msg: "upstream requires Claude Code CLI"}
 		return resp, err
@@ -318,6 +319,7 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	peek := make([]byte, 1024)
 	n, peekErr := decodedBody.Read(peek)
 	if n > 0 && bytes.Contains(peek[:n], []byte("Please use Claude Code CLI")) {
+		log.Errorf("[claude-executor] DETECTED FAKE STREAM RESPONSE from upstream, returning 403")
 		_ = decodedBody.Close()
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), "upstream requires Claude Code CLI")
 		err = statusErr{code: http.StatusForbidden, msg: "upstream requires Claude Code CLI"}
