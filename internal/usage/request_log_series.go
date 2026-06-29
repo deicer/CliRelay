@@ -166,7 +166,76 @@ func QueryAPIKeyDistribution(days int) ([]APIKeyDistributionPoint, error) {
 		}
 		result = append(result, p)
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	result = mergeAPIKeyDistributionByName(result, currentByID)
+	return result, nil
+}
+
+// mergeAPIKeyDistributionByName collapses rows that share a current API-key
+// name onto that current key. Historical or deleted keys may carry the same
+// human-readable name in their logs as a current key, which would otherwise
+// surface as duplicate bars in the distribution chart.
+//
+// Only names that are unique across current keys are merged — ambiguous names
+// are left untouched so the chart can still distinguish them.
+func mergeAPIKeyDistributionByName(rows []APIKeyDistributionPoint, currentByID map[string]APIKeyRow) []APIKeyDistributionPoint {
+	if len(rows) < 2 {
+		return rows
+	}
+	nameCounts := make(map[string]int)
+	nameToKey := make(map[string]string)
+	nameToDisplay := make(map[string]string)
+	for _, row := range currentByID {
+		name := strings.ToLower(strings.TrimSpace(row.Name))
+		if name == "" {
+			continue
+		}
+		nameCounts[name]++
+		nameToKey[name] = strings.TrimSpace(row.Key)
+		nameToDisplay[name] = strings.TrimSpace(row.Name)
+	}
+	type mergeKey struct {
+		name string
+		key  string
+	}
+	merged := make(map[mergeKey]*APIKeyDistributionPoint, len(rows))
+	order := make([]mergeKey, 0, len(rows))
+	for i := range rows {
+		p := &rows[i]
+		name := strings.ToLower(strings.TrimSpace(p.Name))
+		if name != "" && nameCounts[name] == 1 {
+			if k := nameToKey[name]; k != "" {
+				p.APIKey = k
+			}
+			if d := nameToDisplay[name]; d != "" {
+				p.Name = d
+			}
+			name = strings.ToLower(strings.TrimSpace(p.Name))
+		}
+		k := mergeKey{name: name, key: p.APIKey}
+		if existing, ok := merged[k]; ok {
+			existing.Requests += p.Requests
+			existing.Tokens += p.Tokens
+			p.APIKey = ""
+			p.Name = ""
+			p.Requests = 0
+			p.Tokens = 0
+			continue
+		}
+		merged[k] = p
+		order = append(order, k)
+	}
+	out := make([]APIKeyDistributionPoint, 0, len(merged))
+	for _, k := range order {
+		p := merged[k]
+		if p.APIKey == "" {
+			continue
+		}
+		out = append(out, *p)
+	}
+	return out
 }
 
 // HourlyTokenPoint holds token usage per hour for the last N hours.

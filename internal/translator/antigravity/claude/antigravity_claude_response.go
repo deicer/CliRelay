@@ -254,9 +254,14 @@ func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalReq
 				// This creates the structure for a function call in Claude Code format
 				output = output + "event: content_block_start\n"
 
-				// Create the tool use block with unique ID and function details
+				// Create the tool use block with unique ID and function details.
+				// The function name is sanitized into the id so it satisfies the
+				// Antigravity tool_use.id pattern ^[a-zA-Z0-9_-]+$; the original
+				// name is remembered for the reverse (tool_result) conversion.
 				data := fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"tool_use","id":"","name":"","input":{}}}`, params.ResponseIndex)
-				data, _ = sjson.Set(data, "content_block.id", fmt.Sprintf("%s-%d-%d", fcName, time.Now().UnixNano(), atomic.AddUint64(&toolUseIDCounter, 1)))
+				toolUseID := fmt.Sprintf("%s-%d-%d", sanitizeToolUseIDComponent(fcName), time.Now().UnixNano(), atomic.AddUint64(&toolUseIDCounter, 1))
+				rememberToolUseName(toolUseID, fcName)
+				data, _ = sjson.Set(data, "content_block.id", toolUseID)
 				data, _ = sjson.Set(data, "content_block.name", fcName)
 				output = output + fmt.Sprintf("data: %s\n\n\n", data)
 
@@ -475,7 +480,9 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 				name := functionCall.Get("name").String()
 				toolIDCounter++
 				toolBlock := `{"type":"tool_use","id":"","name":"","input":{}}`
-				toolBlock, _ = sjson.Set(toolBlock, "id", fmt.Sprintf("tool_%d", toolIDCounter))
+				toolUseID := fmt.Sprintf("tool_%d", toolIDCounter)
+				rememberToolUseName(toolUseID, name)
+				toolBlock, _ = sjson.Set(toolBlock, "id", toolUseID)
 				toolBlock, _ = sjson.Set(toolBlock, "name", name)
 
 				if args := functionCall.Get("args"); args.Exists() && args.Raw != "" && gjson.Valid(args.Raw) && args.IsObject() {

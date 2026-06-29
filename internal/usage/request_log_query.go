@@ -652,6 +652,22 @@ func queryDistinctAPIKeys(db *sql.DB, cutoff string) ([]string, map[string]strin
 	}
 	defer rows.Close()
 
+	// Index unique current names so historical/deleted keys that share a name
+	// with a live key collapse onto that key instead of showing as duplicate
+	// filter entries. Ambiguous names (shared by >1 current key) are skipped.
+	nameCounts := make(map[string]int)
+	nameToKey := make(map[string]string)
+	nameToDisplay := make(map[string]string)
+	for _, row := range currentByID {
+		n := strings.ToLower(strings.TrimSpace(row.Name))
+		if n == "" {
+			continue
+		}
+		nameCounts[n]++
+		nameToKey[n] = strings.TrimSpace(row.Key)
+		nameToDisplay[n] = strings.TrimSpace(row.Name)
+	}
+
 	values := make([]string, 0)
 	names := make(map[string]string)
 	seen := make(map[string]struct{})
@@ -673,6 +689,14 @@ func queryDistinctAPIKeys(db *sql.DB, cutoff string) ([]string, map[string]strin
 			}
 			if trimmed := strings.TrimSpace(row.Name); trimmed != "" {
 				name = trimmed
+			}
+		}
+		if lower := strings.ToLower(name); lower != "" && nameCounts[lower] == 1 {
+			if k := nameToKey[lower]; k != "" {
+				value = k
+			}
+			if d := nameToDisplay[lower]; d != "" {
+				name = d
 			}
 		}
 		if value == "" {

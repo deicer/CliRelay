@@ -197,7 +197,13 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							}
 
 							if functionID != "" {
-								partJSON, _ = sjson.Set(partJSON, "functionCall.id", functionID)
+								// Antigravity maps functionCall.id to the upstream
+								// tool_use.id, which must match ^[a-zA-Z0-9_-]+$.
+								// Client-echoed ids (incl. ids generated before this
+								// sanitization existed) may contain '.' etc., so clean
+								// them here. functionResponse.id below is sanitized the
+								// same way so the call/response pair still matches.
+								partJSON, _ = sjson.Set(partJSON, "functionCall.id", sanitizeToolUseID(functionID))
 							}
 							partJSON, _ = sjson.Set(partJSON, "functionCall.name", functionName)
 							partJSON, _ = sjson.SetRaw(partJSON, "functionCall.args", argsRaw)
@@ -206,15 +212,17 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "tool_result" {
 						toolCallID := contentResult.Get("tool_use_id").String()
 						if toolCallID != "" {
-							funcName := toolCallID
-							toolCallIDs := strings.Split(toolCallID, "-")
-							if len(toolCallIDs) > 1 {
-								funcName = strings.Join(toolCallIDs[0:len(toolCallIDs)-2], "-")
-							}
+							// Recover the original (unsanitized) function name. The id
+							// was generated with a sanitized name component, so we look
+							// it up in the generation-time map, falling back to the
+							// legacy "<name>-<nano>-<counter>" suffix-strip heuristic.
+							funcName := functionNameForToolUseID(toolCallID)
 							functionResponseResult := contentResult.Get("content")
 
 							functionResponseJSON := `{}`
-							functionResponseJSON, _ = sjson.Set(functionResponseJSON, "id", toolCallID)
+							// Sanitize identically to functionCall.id above so the
+							// tool_use/tool_result pair keeps matching ids upstream.
+							functionResponseJSON, _ = sjson.Set(functionResponseJSON, "id", sanitizeToolUseID(toolCallID))
 							functionResponseJSON, _ = sjson.Set(functionResponseJSON, "name", funcName)
 
 							responseData := ""

@@ -1584,6 +1584,176 @@ func TestQueryAPIKeySelectorsHandleLegacyRowsWithoutAPIKeyID(t *testing.T) {
 	}
 }
 
+func TestQueryFiltersMergesDuplicateNamesOntoCurrentKey(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+
+	if err := UpsertAPIKey(APIKeyRow{ID: "cur-gena", Key: "sk-cur-gena", Name: "Гена"}); err != nil {
+		t.Fatalf("UpsertAPIKey: %v", err)
+	}
+
+	db := getDB()
+	now := time.Now().UTC()
+	for i, r := range []struct {
+		apiKey string
+		name   string
+	}{
+		{"sk-old-gena", "Гена"},   // deleted key, same name -> must merge
+		{"sk-cur-gena", "Гена"},   // current key, same name
+		{"sk-orphan", "Безымян"},  // distinct name, no current match -> stays
+	} {
+		ts := now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano)
+		if _, err := db.Exec(
+			`INSERT INTO request_logs
+				(timestamp, api_key, api_key_name, model, source, channel_name, auth_index,
+				 failed, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ts, r.apiKey, r.name, "gpt-test", "source", "channel", "auth-1",
+			0, 100, 10, 0, 0, 0, 0, 5, 0,
+		); err != nil {
+			t.Fatalf("insert row %d: %v", i, err)
+		}
+	}
+
+	filters, err := QueryFilters(7)
+	if err != nil {
+		t.Fatalf("QueryFilters() error = %v", err)
+	}
+
+	genaCount := 0
+	for _, k := range filters.APIKeys {
+		if filters.APIKeyNames[k] == "Гена" {
+			genaCount++
+		}
+	}
+	if genaCount != 1 {
+		t.Fatalf("expected exactly 1 'Гена' filter entry, got %d: keys=%#v names=%#v", genaCount, filters.APIKeys, filters.APIKeyNames)
+	}
+	if filters.APIKeyNames["sk-cur-gena"] != "Гена" {
+		t.Fatalf("expected sk-cur-gena -> Гена, got %#v", filters.APIKeyNames)
+	}
+	found := false
+	for _, k := range filters.APIKeys {
+		if k == "sk-old-gena" {
+			found = true
+		}
+	}
+	if found {
+		t.Fatalf("sk-old-gena should have merged into sk-cur-gena, got %#v", filters.APIKeys)
+	}
+}
+
+func TestQueryAPIKeyDistributionMergesRowsByCurrentUniqueName(t *testing.T) {
+	initTestUsageDB(t, config.RequestLogStorageConfig{})
+
+	if err := UpsertAPIKey(APIKeyRow{ID: "current-gena", Key: "sk-current-gena", Name: "Гена"}); err != nil {
+		t.Fatalf("UpsertAPIKey(sk-current-gena): %v", err)
+	}
+	if err := UpsertAPIKey(APIKeyRow{ID: "current-zhenya", Key: "sk-current-zhenya", Name: "Женя"}); err != nil {
+		t.Fatalf("UpsertAPIKey(sk-current-zhenya): %v", err)
+	}
+
+	db := getDB()
+	now := time.Now().UTC()
+	rows := []struct {
+		apiKey string
+		name   string
+		tokens int64
+	}{
+		// Historical/deleted key with no api_key_id and the same name as the current key.
+		{"sk-old-gena-1", "Гена", 100},
+		{"sk-old-gena-1", "Гена", 200},
+		{"sk-old-gena-2", "Гена", 50},
+		// Current key with the same name, also no api_key_id in the log row.
+		{"sk-current-gena", "Гена", 999},
+		// Distinct name, distinct key — should stay separate.
+		{"sk-current-zhenya", "Женя", 77},
+	}
+	// Ambiguous name shared by two current keys — historical rows must NOT be
+	// merged onto either current key (the panel still shows them separately).
+	if err := UpsertAPIKey(APIKeyRow{ID: "shared-a", Key: "sk-shared-a", Name: "Общий"}); err != nil {
+		t.Fatalf("UpsertAPIKey(sk-shared-a): %v", err)
+	}
+	if err := UpsertAPIKey(APIKeyRow{ID: "shared-b", Key: "sk-shared-b", Name: "Общий"}); err != nil {
+		t.Fatalf("UpsertAPIKey(sk-shared-b): %v", err)
+	}
+	rows = append(rows,
+		struct {
+			apiKey string
+			name   string
+			tokens int64
+		}{"sk-orphan-shared-1", "Общий", 10},
+		struct {
+			apiKey string
+			name   string
+			tokens int64
+		}{"sk-orphan-shared-2", "Общий", 20},
+	)
+
+	for i, r := range rows {
+		ts := now.Add(time.Duration(i) * time.Second).Format(time.RFC3339Nano)
+		if _, err := db.Exec(
+			`INSERT INTO request_logs
+				(timestamp, api_key, api_key_name, model, source, channel_name, auth_index,
+				 failed, latency_ms, first_token_ms, input_tokens, output_tokens, reasoning_tokens, cached_tokens, total_tokens, cost)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ts, r.apiKey, r.name, "gpt-test", "source", "channel", "auth-1",
+			0, 100, 10, 0, 0, 0, 0, r.tokens, 0,
+		); err != nil {
+			t.Fatalf("insert row %d: %v", i, err)
+		}
+	}
+
+	dist, err := QueryAPIKeyDistribution(7)
+	if err != nil {
+		t.Fatalf("QueryAPIKeyDistribution() error = %v", err)
+	}
+
+	byKey := make(map[string]APIKeyDistributionPoint)
+	for _, p := range dist {
+		byKey[p.APIKey] = p
+	}
+
+	// Historical + current "Гена" rows must collapse onto the current key.
+	gena, ok := byKey["sk-current-gena"]
+	if !ok {
+		t.Fatalf("expected sk-current-gena in distribution, got %#v", dist)
+	}
+	if gena.Name != "Гена" {
+		t.Fatalf("gena.Name = %q, want Гена", gena.Name)
+	}
+	if gena.Requests != 4 {
+		t.Fatalf("gena.Requests = %d, want 4 (3 historical + 1 current)", gena.Requests)
+	}
+	if gena.Tokens != 100+200+50+999 {
+		t.Fatalf("gena.Tokens = %d, want %d", gena.Tokens, 100+200+50+999)
+	}
+
+	// Distinct current key with its own name stays a single row.
+	zhenya, ok := byKey["sk-current-zhenya"]
+	if !ok {
+		t.Fatalf("expected sk-current-zhenya in distribution, got %#v", dist)
+	}
+	if zhenya.Requests != 1 || zhenya.Tokens != 77 {
+		t.Fatalf("zhenya = %#v, want 1 req / 77 tok", zhenya)
+	}
+
+	// Ambiguous name stays as separate historical rows (no merge onto a single current key).
+	if _, ok := byKey["sk-orphan-shared-1"]; !ok {
+		t.Fatalf("expected sk-orphan-shared-1 to remain as own row for ambiguous name, got %#v", dist)
+	}
+	if _, ok := byKey["sk-orphan-shared-2"]; !ok {
+		t.Fatalf("expected sk-orphan-shared-2 to remain as own row for ambiguous name, got %#v", dist)
+	}
+
+	// Historical keys that have been merged must NOT appear as separate rows.
+	if _, ok := byKey["sk-old-gena-1"]; ok {
+		t.Fatalf("sk-old-gena-1 should have been merged into sk-current-gena")
+	}
+	if _, ok := byKey["sk-old-gena-2"]; ok {
+		t.Fatalf("sk-old-gena-2 should have been merged into sk-current-gena")
+	}
+}
+
 func TestRequestStatisticsPersistsAPIKeyIdentitySnapshotAcrossRename(t *testing.T) {
 	initTestUsageDB(t, config.RequestLogStorageConfig{})
 
