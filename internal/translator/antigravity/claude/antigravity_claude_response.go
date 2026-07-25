@@ -11,8 +11,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync/atomic"
-	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/cache"
 	log "github.com/sirupsen/logrus"
@@ -43,9 +41,6 @@ type Params struct {
 	// Signature caching support
 	CurrentThinkingText strings.Builder // Accumulates thinking text for signature caching
 }
-
-// toolUseIDCounter provides a process-wide unique counter for tool use identifiers.
-var toolUseIDCounter uint64
 
 // ConvertAntigravityResponseToClaude performs sophisticated streaming response format conversion.
 // This function implements a complex state machine that translates backend client responses
@@ -255,12 +250,11 @@ func ConvertAntigravityResponseToClaude(_ context.Context, _ string, originalReq
 				output = output + "event: content_block_start\n"
 
 				// Create the tool use block with unique ID and function details.
-				// The function name is sanitized into the id so it satisfies the
-				// Antigravity tool_use.id pattern ^[a-zA-Z0-9_-]+$; the original
-				// name is remembered for the reverse (tool_result) conversion.
+				// The function name is hex-encoded into the id so it satisfies the
+				// Antigravity tool_use.id pattern ^[a-zA-Z0-9_-]+$ and the reverse
+				// (tool_result) conversion can recover it with no shared state.
 				data := fmt.Sprintf(`{"type":"content_block_start","index":%d,"content_block":{"type":"tool_use","id":"","name":"","input":{}}}`, params.ResponseIndex)
-				toolUseID := fmt.Sprintf("%s-%d-%d", sanitizeToolUseIDComponent(fcName), time.Now().UnixNano(), atomic.AddUint64(&toolUseIDCounter, 1))
-				rememberToolUseName(toolUseID, fcName)
+				toolUseID := newToolUseID(fcName)
 				data, _ = sjson.Set(data, "content_block.id", toolUseID)
 				data, _ = sjson.Set(data, "content_block.name", fcName)
 				output = output + fmt.Sprintf("data: %s\n\n\n", data)
@@ -419,7 +413,6 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 	textBuilder := strings.Builder{}
 	thinkingBuilder := strings.Builder{}
 	thinkingSignature := ""
-	toolIDCounter := 0
 	hasToolCall := false
 
 	flushText := func() {
@@ -478,10 +471,8 @@ func ConvertAntigravityResponseToClaudeNonStream(_ context.Context, _ string, or
 				hasToolCall = true
 
 				name := functionCall.Get("name").String()
-				toolIDCounter++
 				toolBlock := `{"type":"tool_use","id":"","name":"","input":{}}`
-				toolUseID := fmt.Sprintf("tool_%d", toolIDCounter)
-				rememberToolUseName(toolUseID, name)
+				toolUseID := newToolUseID(name)
 				toolBlock, _ = sjson.Set(toolBlock, "id", toolUseID)
 				toolBlock, _ = sjson.Set(toolBlock, "name", name)
 

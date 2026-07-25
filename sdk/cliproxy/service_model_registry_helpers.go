@@ -346,20 +346,26 @@ func buildOpenCodeGoConfigModels(entry *config.OpenCodeGoKey, staticModels []*Mo
 		if name == "" {
 			continue
 		}
-		key := strings.ToLower(name)
+		alias := strings.TrimSpace(entry.Models[i].Alias)
+		id := alias
+		if id == "" {
+			id = name
+		}
+		key := strings.ToLower(id)
 		if _, exists := seen[key]; exists {
 			continue
 		}
 		seen[key] = struct{}{}
 
-		if model := staticByID[key]; model != nil {
+		if model := staticByID[strings.ToLower(name)]; model != nil {
 			clone := *model
+			clone.ID = id
 			clone.UserDefined = true
 			out = append(out, &clone)
 			continue
 		}
 		out = append(out, &ModelInfo{
-			ID:          name,
+			ID:          id,
 			Object:      "model",
 			Created:     now,
 			OwnedBy:     "opencode",

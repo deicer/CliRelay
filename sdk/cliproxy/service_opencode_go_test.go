@@ -113,3 +113,36 @@ func TestRegisterModelsForAuth_OpenCodeGoUsesExplicitModels(t *testing.T) {
 		t.Fatalf("deepseek-v4-flash should not be registered from explicit models; got %+v", models)
 	}
 }
+
+func TestRegisterModelsForAuth_OpenCodeGoUsesModelAlias(t *testing.T) {
+	service := &Service{cfg: &config.Config{
+		OpenCodeGoKey: []config.OpenCodeGoKey{{
+			APIKey: "go-key-alias",
+			Models: []config.OpenCodeGoModel{
+				{Name: "kimi-k3", Alias: "k3"},
+			},
+		}},
+	}}
+	auth := &coreauth.Auth{
+		ID:       "opencode-go-auth-alias-models",
+		Provider: "opencode-go",
+		Status:   coreauth.StatusActive,
+		Attributes: map[string]string{
+			"auth_kind": "apikey",
+			"api_key":   "go-key-alias",
+		},
+	}
+
+	registry := GlobalModelRegistry()
+	registry.UnregisterClient(auth.ID)
+	t.Cleanup(func() {
+		registry.UnregisterClient(auth.ID)
+	})
+
+	service.registerModelsForAuth(context.Background(), auth)
+
+	models := registry.GetModelsForClient(auth.ID)
+	if !hasModelID(models, "k3") {
+		t.Fatalf("k3 alias not registered; got %+v", models)
+	}
+}

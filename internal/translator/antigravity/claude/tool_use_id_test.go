@@ -34,18 +34,48 @@ func TestSanitizeToolUseIDKeepsHyphenSuffix(t *testing.T) {
 	}
 }
 
-func TestFunctionNameForToolUseIDUsesRememberedName(t *testing.T) {
-	// Generation-time map wins: recovers the exact (dotted) name even though
-	// the id itself was sanitized.
-	id := "default_api_read_file-1700000000000000000-3"
-	rememberToolUseName(id, "default_api.read_file")
-	if got := functionNameForToolUseID(id); got != "default_api.read_file" {
-		t.Fatalf("functionNameForToolUseID(%q) = %q, want default_api.read_file", id, got)
+func TestNewToolUseIDRoundTrip(t *testing.T) {
+	// The id is self-describing: encoding then decoding recovers the exact
+	// name — including dots, hyphens and unicode the legacy heuristic mangled —
+	// with no shared state.
+	names := []string{
+		"default_api.read_file",
+		"read",
+		"foo.bar/baz:qux",
+		"a-b-c",           // hyphens in the name: legacy suffix-strip got this wrong
+		"инструмент",      // unicode
+		"tool.with.dots.x",
+	}
+	for _, name := range names {
+		id := newToolUseID(name)
+		for _, r := range id {
+			ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
+			if !ok {
+				t.Fatalf("id %q for %q contains invalid rune %q", id, name, r)
+			}
+		}
+		if got := functionNameForToolUseID(id); got != name {
+			t.Fatalf("round trip %q: functionNameForToolUseID(%q) = %q", name, id, got)
+		}
+	}
+}
+
+func TestNewToolUseIDUnique(t *testing.T) {
+	// The atomic counter keeps ids unique even for the same name generated in a
+	// tight loop (guards the non-streaming path against id collisions).
+	seen := make(map[string]struct{}, 1000)
+	for i := 0; i < 1000; i++ {
+		id := newToolUseID("read")
+		if _, dup := seen[id]; dup {
+			t.Fatalf("duplicate id %q at i=%d", id, i)
+		}
+		seen[id] = struct{}{}
 	}
 }
 
 func TestFunctionNameForToolUseIDLegacyFallback(t *testing.T) {
-	// Unknown id (not in the map) falls back to stripping the trailing
+	// Ids from older builds / other proxies ("<name>-<nano>-<counter>", where
+	// the name segment is not valid hex) fall back to stripping the trailing
 	// "-<nano>-<counter>" suffix, matching pre-change behavior.
 	id := "my-tool-1700000000000000000-9"
 	if got := functionNameForToolUseID(id); got != "my-tool" {

@@ -110,6 +110,10 @@ func (m *Manager) rebuildAPIKeyModelAliasLocked(cfg *runtimeConfigSnapshot) {
 			if entry := resolveVertexAPIKeyConfig(cfg, auth); entry != nil {
 				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
 			}
+		case "opencode-go":
+			if entry := resolveAPIKeyConfig(cfg.OpenCodeGoKey, auth); entry != nil {
+				compileAPIKeyModelAliasForModels(byAlias, entry.Models)
+			}
 		default:
 			// OpenAI-compat uses config selection from auth.Attributes.
 			providerKey := ""

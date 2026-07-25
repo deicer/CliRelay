@@ -1,8 +1,12 @@
 package claude
 
 import (
+	"encoding/hex"
+	"fmt"
 	"strings"
-	"sync"
+	"sync/atomic"
+	"time"
+	"unicode/utf8"
 )
 
 // Antigravity (Claude-on-Vertex) validates tool_use.id against the pattern
@@ -12,15 +16,27 @@ import (
 //
 //	messages.N.content.M.tool_use.id: String should match pattern '^[a-zA-Z0-9_-]+$'
 //
-// We sanitize the function name before embedding it in the id. Because the
-// Claude tool_result block carries only tool_use_id (not the function name),
-// the reverse path reconstructs the name by parsing the id. Sanitizing is not
-// reversible, so we keep a process-wide id->name map populated at generation
-// time and consulted when converting tool_result back to a functionResponse.
+// The Claude tool_result block carries only tool_use_id (not the function
+// name), so the reverse path must recover the name from the id alone. Instead
+// of keeping a process-wide id->name map (which grows without bound for a
+// long-lived proxy), the id is self-describing: the original name is
+// hex-encoded into it. Hex uses only [0-9a-f], which contains no '-', so it
+// never collides with the '-' delimiter and always satisfies the id pattern.
 
-// toolUseNameByID maps a generated tool_use id to its original (unsanitized)
-// function name so the reverse conversion can recover the exact name.
-var toolUseNameByID sync.Map // map[string]string
+// toolUseIDCounter provides a process-wide unique counter for tool use
+// identifiers (guarantees uniqueness even within the same nanosecond).
+var toolUseIDCounter uint64
+
+// newToolUseID builds a unique, self-describing tool_use id of the form
+// "<hexname>-<unixnano>-<counter>". functionNameForToolUseID reverses it with
+// no shared state.
+func newToolUseID(name string) string {
+	return fmt.Sprintf("%s-%d-%d",
+		hex.EncodeToString([]byte(name)),
+		time.Now().UnixNano(),
+		atomic.AddUint64(&toolUseIDCounter, 1),
+	)
+}
 
 // sanitizeToolUseIDComponent replaces every character outside [a-zA-Z0-9_-]
 // with '_' so the assembled id satisfies the Antigravity id pattern.
@@ -45,8 +61,8 @@ func sanitizeToolUseIDComponent(s string) string {
 // name component) so it satisfies ^[a-zA-Z0-9_-]+$. It is applied on the
 // request path to ids echoed back by the client, which may have been produced
 // before id sanitization existed or by clients that embed unsanitized tool
-// names. The character class is identical to sanitizeToolUseIDComponent; the
-// distinct name documents intent at the two call sites.
+// names. Ids produced by newToolUseID are already within the class, so this is
+// a no-op for them.
 func sanitizeToolUseID(id string) string {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -55,29 +71,26 @@ func sanitizeToolUseID(id string) string {
 	return sanitizeToolUseIDComponent(id)
 }
 
-// rememberToolUseName records the original function name for a generated id.
-func rememberToolUseName(id, name string) {
-	id = strings.TrimSpace(id)
-	if id == "" {
-		return
-	}
-	toolUseNameByID.Store(id, name)
-}
-
 // functionNameForToolUseID returns the original function name for a tool_use id.
 //
-// It first consults the generation-time map (exact, handles sanitized names),
-// then falls back to the legacy heuristic of stripping the trailing
-// "-<unixnano>-<counter>" suffix for ids produced before this change or by
-// other proxies.
+// New ids ("<hexname>-<unixnano>-<counter>") are decoded directly from the
+// hex-encoded name segment. Ids produced by older builds or other proxies fall
+// back to the legacy heuristic of stripping the trailing "-<unixnano>-<counter>"
+// suffix.
 func functionNameForToolUseID(id string) string {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return id
 	}
-	if v, ok := toolUseNameByID.Load(id); ok {
-		if name, ok := v.(string); ok && name != "" {
-			return name
+	// New self-describing format: the hex-encoded name is the segment before
+	// the first '-'. Decode only when it is well-formed hex that yields valid
+	// UTF-8, so a legacy name that coincidentally looks like hex (e.g. "cafe")
+	// is not misread — such bytes almost never decode to valid UTF-8.
+	// ponytail: hex round-trips the exact name (dots, hyphens, unicode) with
+	// zero state; the UTF-8 gate is the only ambiguity vs legacy ids.
+	if i := strings.IndexByte(id, '-'); i > 0 {
+		if b, err := hex.DecodeString(id[:i]); err == nil && utf8.Valid(b) {
+			return string(b)
 		}
 	}
 	// Legacy fallback: id == "<name>-<unixnano>-<counter>".

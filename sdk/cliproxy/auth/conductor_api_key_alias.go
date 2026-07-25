@@ -41,6 +41,8 @@ func (m *Manager) applyAPIKeyModelAlias(auth *Auth, requestedModel string) strin
 		upstreamModel = resolveUpstreamModelForBedrockAPIKey(cfg, auth, requestedModel)
 	case "vertex":
 		upstreamModel = resolveUpstreamModelForVertexAPIKey(cfg, auth, requestedModel)
+	case "opencode-go":
+		upstreamModel = resolveUpstreamModelForOpenCodeGoAPIKey(cfg, auth, requestedModel)
 	default:
 		upstreamModel = resolveUpstreamModelForOpenAICompatAPIKey(cfg, auth, requestedModel)
 	}
@@ -221,6 +223,17 @@ func resolveUpstreamModelForBedrockAPIKey(cfg *runtimeConfigSnapshot, auth *Auth
 
 func resolveUpstreamModelForVertexAPIKey(cfg *runtimeConfigSnapshot, auth *Auth, requestedModel string) string {
 	entry := resolveVertexAPIKeyConfig(cfg, auth)
+	if entry == nil {
+		return ""
+	}
+	return resolveModelAliasFromConfigModels(requestedModel, asModelAliasEntries(entry.Models))
+}
+
+func resolveUpstreamModelForOpenCodeGoAPIKey(cfg *runtimeConfigSnapshot, auth *Auth, requestedModel string) string {
+	if cfg == nil {
+		return ""
+	}
+	entry := resolveAPIKeyConfig(cfg.OpenCodeGoKey, auth)
 	if entry == nil {
 		return ""
 	}

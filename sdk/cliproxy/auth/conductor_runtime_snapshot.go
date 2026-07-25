@@ -13,6 +13,7 @@ type runtimeConfigSnapshot struct {
 	CodexKey            []runtimeAPIKeyModelConfig
 	BedrockKey          []runtimeBedrockKeyConfig
 	VertexCompatAPIKey  []runtimeAPIKeyModelConfig
+	OpenCodeGoKey       []runtimeAPIKeyModelConfig
 	OpenAICompatibility []runtimeOpenAICompatibilityConfig
 }
 
@@ -98,6 +99,7 @@ func newRuntimeConfigSnapshot(cfg *sdkconfig.Config) *runtimeConfigSnapshot {
 		CodexKey:            cloneRuntimeAPIKeyModelConfigs(cfg.CodexKey),
 		BedrockKey:          cloneRuntimeBedrockKeyConfigs(cfg.BedrockKey),
 		VertexCompatAPIKey:  cloneRuntimeAPIKeyModelConfigs(cfg.VertexCompatAPIKey),
+		OpenCodeGoKey:       cloneRuntimeOpenCodeGoKeyConfigs(cfg.OpenCodeGoKey),
 		OpenAICompatibility: cloneRuntimeOpenAICompatibilityConfigs(cfg.OpenAICompatibility),
 	}
 }
@@ -160,6 +162,21 @@ func cloneRuntimeAPIKeyModelConfigs[T interface {
 	return out
 }
 
+func cloneRuntimeOpenCodeGoKeyConfigs(entries []sdkconfig.OpenCodeGoKey) []runtimeAPIKeyModelConfig {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]runtimeAPIKeyModelConfig, 0, len(entries))
+	for i := range entries {
+		entry := entries[i]
+		out = append(out, runtimeAPIKeyModelConfig{
+			APIKey: entry.APIKey,
+			Models: cloneRuntimeModelAliasEntries(entry.Models),
+		})
+	}
+	return out
+}
+
 func modelsForRuntimeConfigEntry[T any](entry T) []runtimeModelAliasEntry {
 	switch typed := any(entry).(type) {
 	case sdkconfig.GeminiKey:
@@ -169,6 +186,8 @@ func modelsForRuntimeConfigEntry[T any](entry T) []runtimeModelAliasEntry {
 	case sdkconfig.CodexKey:
 		return cloneRuntimeModelAliasEntries(typed.Models)
 	case sdkconfig.VertexCompatKey:
+		return cloneRuntimeModelAliasEntries(typed.Models)
+	case sdkconfig.OpenCodeGoKey:
 		return cloneRuntimeModelAliasEntries(typed.Models)
 	default:
 		return nil

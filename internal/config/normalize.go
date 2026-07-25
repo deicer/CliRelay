@@ -246,12 +246,21 @@ func NormalizeOpenCodeGoModels(models []OpenCodeGoModel) []OpenCodeGoModel {
 		if name == "" {
 			continue
 		}
-		key := strings.ToLower(name)
+		alias := strings.TrimSpace(models[i].Alias)
+		key := alias
+		if key == "" {
+			key = name
+		}
+		key = strings.ToLower(key)
 		if _, exists := seen[key]; exists {
 			continue
 		}
 		seen[key] = struct{}{}
-		out = append(out, OpenCodeGoModel{Name: name})
+		model := OpenCodeGoModel{Name: name}
+		if alias != "" && !strings.EqualFold(alias, name) {
+			model.Alias = alias
+		}
+		out = append(out, model)
 	}
 	return out
 }
