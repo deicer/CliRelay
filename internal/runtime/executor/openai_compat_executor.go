@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -155,8 +156,9 @@ func (e *OpenAICompatExecutor) Execute(ctx context.Context, auth *cliproxyauth.A
 		b := readUpstreamErrorBody(e.Identifier(), httpResp.Body)
 		recorder.AppendResponseChunk(b)
 		logWithRequestID(execCtx.Context).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+		warnOnCredentialRejection(execCtx.Context, e.Identifier(), auth, httpResp.StatusCode, httpResp.Header.Get("Content-Type"), b)
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(b))
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(b), retryAfter: parseRetryAfterHeader(httpResp.Header)}
 		return resp, err
 	}
 	body, err := readUpstreamResponseBody(e.Identifier(), httpResp.Body)
@@ -254,11 +256,12 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		b := readUpstreamErrorBody(e.Identifier(), httpResp.Body)
 		recorder.AppendResponseChunk(b)
 		logWithRequestID(execCtx.Context).Debugf("request error, error status: %d, error message: %s", httpResp.StatusCode, summarizeErrorBody(httpResp.Header.Get("Content-Type"), b))
+		warnOnCredentialRejection(execCtx.Context, e.Identifier(), auth, httpResp.StatusCode, httpResp.Header.Get("Content-Type"), b)
 		reporter.publishFailureWithContent(execCtx.Context, string(req.Payload), string(b))
 		if errClose := httpResp.Body.Close(); errClose != nil {
 			log.Errorf("openai compat executor: close response body error: %v", errClose)
 		}
-		err = statusErr{code: httpResp.StatusCode, msg: string(b)}
+		err = statusErr{code: httpResp.StatusCode, msg: string(b), retryAfter: parseRetryAfterHeader(httpResp.Header)}
 		return nil, err
 	}
 	out := make(chan cliproxyexecutor.StreamChunk)
@@ -397,6 +400,48 @@ func shouldNormalizeKimiCompatPayload(model string) bool {
 	return strings.HasPrefix(model, "kimi-") ||
 		strings.Contains(model, "/kimi-") ||
 		strings.Contains(model, "moonshot")
+}
+
+// warnOnCredentialRejection logs a warning when an upstream rejects the credential
+// itself. Without it a revoked or mistyped API key only shows up as a Debugf line
+// and a rising failure counter, while the management panel still renders a healthy
+// quota (that is scraped with a separate dashboard cookie, not the API key).
+func warnOnCredentialRejection(ctx context.Context, provider string, auth *cliproxyauth.Auth, statusCode int, contentType string, body []byte) {
+	if statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden {
+		return
+	}
+	label := auth.ChannelName()
+	if label == "" {
+		label = "unknown"
+	}
+	logWithRequestID(ctx).Warnf("provider %s rejected credential for channel %q with status %d: %s", provider, label, statusCode, summarizeErrorBody(contentType, body))
+}
+
+// maxUpstreamRetryAfter caps how long an upstream Retry-After header may park an
+// auth. Anything longer is treated as a bogus value and left to the normal
+// quota backoff.
+const maxUpstreamRetryAfter = 24 * time.Hour
+
+// parseRetryAfterHeader reads an upstream Retry-After header in either of the
+// two RFC 7231 forms (delay-seconds or HTTP-date) and returns it as a duration.
+// Returns nil when the header is absent, unparseable, non-positive, or absurd.
+func parseRetryAfterHeader(header http.Header) *time.Duration {
+	raw := strings.TrimSpace(header.Get("Retry-After"))
+	if raw == "" {
+		return nil
+	}
+	var d time.Duration
+	if seconds, err := strconv.Atoi(raw); err == nil {
+		d = time.Duration(seconds) * time.Second
+	} else if at, errTime := http.ParseTime(raw); errTime == nil {
+		d = time.Until(at)
+	} else {
+		return nil
+	}
+	if d <= 0 || d > maxUpstreamRetryAfter {
+		return nil
+	}
+	return &d
 }
 
 type statusErr struct {
