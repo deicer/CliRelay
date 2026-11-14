@@ -73,6 +73,39 @@ func TestBuildCommandCodeGenerateBody(t *testing.T) {
 	}
 }
 
+func TestCommandCodeConvertMessagesDropsOrphanToolResults(t *testing.T) {
+	body, err := buildCommandCodeGenerateBody("deepseek/deepseek-v4-flash", []byte(`{
+		"messages":[
+			{"role":"tool","tool_call_id":"missing","content":"stale"},
+			{"role":"user","content":"hello"}
+		]
+	}`), true)
+	if err != nil {
+		t.Fatalf("buildCommandCodeGenerateBody() error = %v", err)
+	}
+	if got := gjson.GetBytes(body, "params.messages.#").Int(); got != 1 {
+		t.Fatalf("messages = %d, want orphan tool result omitted", got)
+	}
+	if got := gjson.GetBytes(body, "params.messages.0.role").String(); got != "user" {
+		t.Fatalf("remaining message role = %q, want user", got)
+	}
+}
+
+func TestTrimCommandCodeHistoryLeavesPromptUnderGatewayLimit(t *testing.T) {
+	large := strings.Repeat("code ", 120_000)
+	messages := make([]commandCodeMessage, 0, 12)
+	for i := 0; i < 12; i++ {
+		messages = append(messages, commandCodeMessage{Role: "user", Content: []commandCodeContent{{Type: "text", Text: large}}})
+	}
+	trimmed := trimCommandCodeHistory("deepseek/deepseek-v4-flash", "", messages, nil)
+	if len(trimmed) >= len(messages) {
+		t.Fatalf("history was not trimmed: %d messages", len(trimmed))
+	}
+	if got := commandCodePromptTokens("deepseek/deepseek-v4-flash", "", trimmed, nil); got > commandCodeMaxPromptTokens {
+		t.Fatalf("trimmed prompt tokens = %d, want <= %d", got, commandCodeMaxPromptTokens)
+	}
+}
+
 func TestCommandCodeGenerateURL(t *testing.T) {
 	tests := map[string]string{
 		"https://api.commandcode.ai":              "https://api.commandcode.ai/alpha/generate",

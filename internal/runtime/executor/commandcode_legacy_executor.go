@@ -21,6 +21,7 @@ import (
 	coreusage "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	"github.com/tidwall/gjson"
+	"github.com/tiktoken-go/tokenizer"
 )
 
 const (
@@ -29,6 +30,11 @@ const (
 	// Command Code version. Keep this in sync with the installed command-code
 	// client; callers can override it through the provider's custom headers.
 	commandCodeClientVersion = "0.52.1"
+	// Command Code's model context is nominally 1M tokens. Leave room for the
+	// gateway's config/system preamble and tokenizer differences instead of
+	// forwarding a request that crosses the hard limit and only returns a vague
+	// NDJSON 400 error.
+	commandCodeMaxPromptTokens = 900_000
 )
 
 // IsCommandCodeProvider reports whether an OpenAI-compatible channel should
@@ -336,6 +342,7 @@ func buildCommandCodeGenerateBody(model string, openAIRequest []byte, _ bool) ([
 		return nil, err
 	}
 	tools := commandCodeConvertTools(root["tools"])
+	converted = trimCommandCodeHistory(model, system, converted, tools)
 	maxTokens := int64(8192)
 	for _, key := range []string{"max_tokens", "max_completion_tokens"} {
 		if raw := root[key]; len(raw) > 0 {
@@ -418,7 +425,11 @@ func commandCodeConvertMessages(messages []json.RawMessage) (string, []commandCo
 			id := gjson.GetBytes(raw, "tool_call_id").String()
 			name := toolNames[id]
 			if name == "" {
-				name = "unknown"
+				// A history slice can contain a tool result whose call was
+				// dropped by context trimming. The native gateway requires a
+				// real tool name; omitting the orphan result is safer than
+				// sending the placeholder "unknown".
+				continue
 			}
 			value := gjson.GetBytes(raw, "content")
 			text := value.String()
@@ -449,6 +460,83 @@ func commandCodeConvertMessages(messages []json.RawMessage) (string, []commandCo
 		}
 	}
 	return strings.Join(systemParts, "\n\n"), out, nil
+}
+
+// trimCommandCodeHistory keeps the newest complete portion of a conversation
+// under the native gateway's context limit. Responses clients routinely send
+// long tool histories; once the request crosses the upstream limit the gateway
+// reports only `Bad Request` in an NDJSON error event, which is otherwise
+// indistinguishable from a malformed ModelMessage payload.
+func trimCommandCodeHistory(model, system string, messages []commandCodeMessage, tools []map[string]any) []commandCodeMessage {
+	if len(messages) == 0 {
+		return messages
+	}
+	enc, err := tokenizerForModel(model)
+	if err != nil || enc == nil {
+		if commandCodePromptTokens(model, system, messages, tools) <= commandCodeMaxPromptTokens {
+			return messages
+		}
+		return messages[len(messages)-1:]
+	}
+	fixed := commandCodeTokenCount(enc, system) + commandCodeTokenCount(enc, tools)
+	perMessage := make([]int, len(messages))
+	total := fixed
+	for i := range messages {
+		perMessage[i] = commandCodeTokenCount(enc, messages[i])
+		total += perMessage[i]
+	}
+	if total <= commandCodeMaxPromptTokens {
+		return messages
+	}
+	budget := commandCodeMaxPromptTokens - fixed
+	start := len(messages)
+	running := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		if running+perMessage[i] > budget {
+			break
+		}
+		running += perMessage[i]
+		start = i
+	}
+	start = commandCodeHistoryBoundary(messages, start)
+	if start >= len(messages) {
+		return messages[len(messages)-1:]
+	}
+	return messages[start:]
+}
+
+func commandCodeHistoryBoundary(messages []commandCodeMessage, start int) int {
+	for start < len(messages) && messages[start].Role == "tool" {
+		start++
+	}
+	return start
+}
+
+func commandCodePromptTokens(model, system string, messages []commandCodeMessage, tools []map[string]any) int {
+	enc, err := tokenizerForModel(model)
+	if err != nil || enc == nil {
+		return commandCodeMaxPromptTokens + 1
+	}
+	total := commandCodeTokenCount(enc, system) + commandCodeTokenCount(enc, tools)
+	for _, message := range messages {
+		total += commandCodeTokenCount(enc, message)
+	}
+	return total
+}
+
+func commandCodeTokenCount(enc tokenizer.Codec, value any) int {
+	if enc == nil {
+		return commandCodeMaxPromptTokens + 1
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return commandCodeMaxPromptTokens + 1
+	}
+	count, err := enc.Count(string(payload))
+	if err != nil {
+		return commandCodeMaxPromptTokens + 1
+	}
+	return count
 }
 
 func commandCodeConvertContent(content gjson.Result) []commandCodeContent {
