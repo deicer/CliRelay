@@ -476,7 +476,7 @@ func trimCommandCodeHistory(model, system string, messages []commandCodeMessage,
 		if commandCodePromptTokens(model, system, messages, tools) <= commandCodeMaxPromptTokens {
 			return messages
 		}
-		return messages[len(messages)-1:]
+		return commandCodeFilterOrphanToolResults(messages[commandCodeHistoryBoundary(messages, len(messages)-1):])
 	}
 	fixed := commandCodeTokenCount(enc, system) + commandCodeTokenCount(enc, tools)
 	perMessage := make([]int, len(messages))
@@ -500,9 +500,14 @@ func trimCommandCodeHistory(model, system string, messages []commandCodeMessage,
 	}
 	start = commandCodeHistoryBoundary(messages, start)
 	if start >= len(messages) {
-		return messages[len(messages)-1:]
+		for i := len(messages) - 1; i >= 0; i-- {
+			if messages[i].Role != "tool" {
+				return messages[i : i+1]
+			}
+		}
+		return nil
 	}
-	return messages[start:]
+	return commandCodeFilterOrphanToolResults(messages[start:])
 }
 
 func commandCodeHistoryBoundary(messages []commandCodeMessage, start int) int {
@@ -510,6 +515,38 @@ func commandCodeHistoryBoundary(messages []commandCodeMessage, start int) int {
 		start++
 	}
 	return start
+}
+
+func commandCodeFilterOrphanToolResults(messages []commandCodeMessage) []commandCodeMessage {
+	knownCalls := make(map[string]struct{})
+	for _, message := range messages {
+		if message.Role != "assistant" {
+			continue
+		}
+		for _, part := range message.Content {
+			if part.Type == "tool-call" && part.ToolCallID != "" {
+				knownCalls[part.ToolCallID] = struct{}{}
+			}
+		}
+	}
+	out := make([]commandCodeMessage, 0, len(messages))
+	for _, message := range messages {
+		if message.Role != "tool" {
+			out = append(out, message)
+			continue
+		}
+		content := make([]commandCodeContent, 0, len(message.Content))
+		for _, part := range message.Content {
+			if _, ok := knownCalls[part.ToolCallID]; ok {
+				content = append(content, part)
+			}
+		}
+		if len(content) > 0 {
+			message.Content = content
+			out = append(out, message)
+		}
+	}
+	return out
 }
 
 func commandCodePromptTokens(model, system string, messages []commandCodeMessage, tools []map[string]any) int {
