@@ -23,9 +23,8 @@ func commandCodeAuth() *coreauth.Auth {
 	}
 }
 
-// Command Code speaks plain OpenAI, so it must land on the shared compat
-// executor rather than falling through to a provider-specific one.
-func TestRegisterExecutorForAuthCommandCodeUsesOpenAICompatExecutor(t *testing.T) {
+// Command Code Go must use the native alpha gateway instead of the Provider API.
+func TestRegisterExecutorForAuthCommandCodeUsesNativeExecutor(t *testing.T) {
 	manager := coreauth.NewManager(nil, nil, nil)
 
 	RegisterExecutorForAuth(manager, &config.Config{}, commandCodeAuth(), false, nil)
@@ -34,9 +33,9 @@ func TestRegisterExecutorForAuthCommandCodeUsesOpenAICompatExecutor(t *testing.T
 	if !ok || got == nil {
 		t.Fatal("expected commandcode executor after bind")
 	}
-	compat, ok := got.(*executor.OpenAICompatExecutor)
+	compat, ok := got.(*executor.CommandCodeExecutor)
 	if !ok {
-		t.Fatalf("executor = %T, want *executor.OpenAICompatExecutor", got)
+		t.Fatalf("executor = %T, want *executor.CommandCodeExecutor", got)
 	}
 	if compat.Identifier() != "commandcode" {
 		t.Fatalf("identifier = %q, want commandcode", compat.Identifier())

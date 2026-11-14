@@ -112,12 +112,16 @@ func (s *Service) registerOpenAICompatModels(
 			}
 			return true
 		}
-		ms := make([]*ModelInfo, 0, len(compat.Models))
-		for j := range compat.Models {
-			m := compat.Models[j]
-			modelID := m.Alias
+		ms := make([]*ModelInfo, 0, len(compat.Models)*2)
+		appendModel := func(modelID string) {
+			modelID = strings.TrimSpace(modelID)
 			if modelID == "" {
-				modelID = m.Name
+				return
+			}
+			for _, existing := range ms {
+				if strings.EqualFold(existing.ID, modelID) {
+					return
+				}
 			}
 			ms = append(ms, &ModelInfo{
 				ID:          modelID,
@@ -128,6 +132,13 @@ func (s *Service) registerOpenAICompatModels(
 				DisplayName: modelID,
 				UserDefined: true,
 			})
+		}
+		for j := range compat.Models {
+			m := compat.Models[j]
+			appendModel(m.Name)
+			if !strings.EqualFold(strings.TrimSpace(m.Alias), strings.TrimSpace(m.Name)) {
+				appendModel(m.Alias)
+			}
 		}
 		if auth == nil {
 			return true

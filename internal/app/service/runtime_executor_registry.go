@@ -580,6 +580,10 @@ func RegisterExecutorForAuth(coreManager *coreauth.Manager, base *config.Config,
 	if auth.Disabled {
 		return
 	}
+	if executor.IsCommandCodeProvider(auth) {
+		register(executor.NewCommandCodeExecutor(cfg))
+		return
+	}
 	if compatProviderKey, _, isCompat := openAICompatInfoFromAuth(auth); isCompat {
 		if compatProviderKey == "" {
 			compatProviderKey = strings.ToLower(strings.TrimSpace(auth.Provider))

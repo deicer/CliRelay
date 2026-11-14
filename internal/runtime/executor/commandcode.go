@@ -1,9 +1,8 @@
 package executor
 
-// Command Code speaks plain OpenAI on https://api.commandcode.ai/provider/v1, so
-// it is served by OpenAICompatExecutor rather than a dedicated executor. What
-// lives here is only the provider identity and the per-credential lookups that
-// the shared compat paths need.
+// Command Code uses the native /alpha/generate gateway. The implementation is
+// kept in commandcode_legacy_executor.go because the gateway is not part of the
+// public Provider API and still returns the legacy NDJSON event stream.
 //
 // Note the plan boundary: Command Code's $1 "Go" plan mints a working key but
 // answers 403 upgrade_required on this base URL, because that plan excludes API
