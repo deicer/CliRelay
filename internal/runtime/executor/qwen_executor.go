@@ -289,6 +289,7 @@ func (e *QwenExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	}
 	recorder.AppendResponseChunk(data)
 	reporter.publishWithContent(execCtx.Context, parseOpenAIUsage(data), string(req.Payload), string(data))
+	responseData := normalizeQwenResponseModel(data, req.Model)
 	var param any
 	// Note: TranslateNonStream uses req.Model (original with suffix) to preserve
 	// the original model name in the response for client compatibility.
@@ -299,7 +300,7 @@ func (e *QwenExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		req.Model,
 		opts.OriginalRequest,
 		translated,
-		data,
+		responseData,
 		&param,
 	)
 	resp = cliproxyexecutor.Response{Payload: []byte(out), Headers: httpResp.Header.Clone()}
@@ -407,6 +408,7 @@ func (e *QwenExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			if detail, ok := parseOpenAIStreamUsage(line); ok {
 				reporter.publish(execCtx.Context, detail)
 			}
+			responseLine := normalizeQwenResponseModel(bytes.Clone(line), req.Model)
 			chunks := sdktranslator.TranslateStream(
 				execCtx.Context,
 				execCtx.Execution.TargetFormat,
@@ -414,7 +416,7 @@ func (e *QwenExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 				req.Model,
 				opts.OriginalRequest,
 				translated,
-				bytes.Clone(line),
+				responseLine,
 				&param,
 			)
 			for i := range chunks {
@@ -539,6 +541,42 @@ func applyQwenHeaders(r *http.Request, token string, stream bool) {
 		return
 	}
 	r.Header.Set("Accept", "application/json")
+}
+
+// normalizeQwenResponseModel restores the client-requested model identifier in
+// OpenAI-compatible responses. Qwen may return a canonical alias such as
+// qwen4.0-max-preview even when the request used qwen4-max-preview, and clients
+// commonly treat that metadata difference as a model switch.
+func normalizeQwenResponseModel(raw []byte, requestedModel string) []byte {
+	requestedModel = strings.TrimSpace(requestedModel)
+	if requestedModel == "" {
+		return raw
+	}
+
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return raw
+	}
+
+	dataPrefix := false
+	payload := trimmed
+	if bytes.HasPrefix(payload, []byte("data:")) {
+		dataPrefix = true
+		payload = bytes.TrimSpace(payload[len("data:"):])
+	}
+	root := gjson.ParseBytes(payload)
+	if !root.IsObject() || !root.Get("model").Exists() {
+		return raw
+	}
+
+	normalized, err := sjson.SetBytes(payload, "model", requestedModel)
+	if err != nil {
+		return raw
+	}
+	if dataPrefix {
+		return append([]byte("data: "), normalized...)
+	}
+	return normalized
 }
 
 func qwenCreds(a *cliproxyauth.Auth) (token, baseURL string) {
